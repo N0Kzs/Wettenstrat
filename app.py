@@ -123,6 +123,42 @@ def get_last_h2h_match(team_a_id, team_b_id):
     
     return f"{game_date}: {away['team']['name']} ({away.get('score', 0)}) @ {home['team']['name']} ({home.get('score', 0)})"
 
+def calculate_and_format_comparison(team_a_name, team_a_id, team_b_name, team_b_id, s_year, e_year, format_filter):
+    """Calculates data and builds a clean formatted comparison DataFrame."""
+    team_a_stats = fetch_0_run_innings(team_a_id, s_year, e_year)
+    team_b_stats = fetch_0_run_innings(team_b_id, s_year, e_year)
+    
+    a_row = {"Team": team_a_name}
+    b_row = {"Team": team_b_name}
+    
+    for i in range(1, 10):
+        inning = str(i)
+        
+        # Team A
+        a_played = team_a_stats[inning]['played']
+        a_zeros = team_a_stats[inning]['zero_runs']
+        if a_played == 0:
+            a_row[inning] = "0" if format_filter == "Count" else "0%"
+        elif format_filter == "Count":
+            a_row[inning] = f"{a_zeros} / {a_played}"
+        else:
+            a_row[inning] = f"{round((a_zeros / a_played) * 100, 1)}%"
+
+        # Team B
+        b_played = team_b_stats[inning]['played']
+        b_zeros = team_b_stats[inning]['zero_runs']
+        if b_played == 0:
+            b_row[inning] = "0" if format_filter == "Count" else "0%"
+        elif format_filter == "Count":
+            b_row[inning] = f"{b_zeros} / {b_played}"
+        else:
+            b_row[inning] = f"{round((b_zeros / b_played) * 100, 1)}%"
+            
+    df_zeros = pd.DataFrame([a_row, b_row])
+    ordered_inning_cols = ['Team', '1', '2', '3', '4', '5', '6', '7', '8', '9']
+    return df_zeros[ordered_inning_cols]
+
+
 # ==========================================
 # TAB 1: DAILY SCORES
 # ==========================================
@@ -209,50 +245,69 @@ with tab2:
         s_year, e_year = 1998, current_year
         st.warning("⚠️ 'All Time' is capped back to 1998 (Modern Expansion Era) to ensure stable loading times.")
 
-    if show_last_match and team_a_id and team_b_id:
+    if show_last_match and team_a_id and team_b_id and match_selection != "-- Manual Selection --":
         last_match = get_last_h2h_match(team_a_id, team_b_id)
         if last_match:
             st.success(f"**Last Head-to-Head Match:** {last_match}")
         else:
             st.info("**Last Head-to-Head Match:** No recent matches found.")
 
-    if st.button("Generate Inning Data", type="primary"):
-        if not team_a_id or not team_b_id:
-            st.error("Error identifying teams. Please ensure MLB team names are matching correctly.")
-        else:
-            with st.spinner(f"Fetching play data from {s_year} to {e_year}..."):
-                team_a_stats = fetch_0_run_innings(team_a_id, s_year, e_year)
-                team_b_stats = fetch_0_run_innings(team_b_id, s_year, e_year)
-                
-                a_row = {"Team": team_a_name}
-                b_row = {"Team": team_b_name}
-                
-                for i in range(1, 10):
-                    inning = str(i)
-                    
-                    a_played = team_a_stats[inning]['played']
-                    a_zeros = team_a_stats[inning]['zero_runs']
-                    if a_played == 0:
-                        a_row[inning] = "0" if format_filter == "Count" else "0%"
-                    elif format_filter == "Count":
-                        a_row[inning] = f"{a_zeros} / {a_played}"
-                    else:
-                        a_row[inning] = f"{round((a_zeros / a_played) * 100, 1)}%"
+    # Action Buttons Side-by-Side
+    btn_col1, btn_col2 = st.columns([1, 4])
+    with btn_col1:
+        run_single = st.button("Analyze Selected", type="primary", use_container_width=True)
+    with btn_col2:
+        run_all = st.button("🔥 Generate All Upcoming Matches", type="secondary")
 
-                    b_played = team_b_stats[inning]['played']
-                    b_zeros = team_b_stats[inning]['zero_runs']
-                    if b_played == 0:
-                        b_row[inning] = "0" if format_filter == "Count" else "0%"
-                    elif format_filter == "Count":
-                        b_row[inning] = f"{b_zeros} / {b_played}"
-                    else:
-                        b_row[inning] = f"{round((b_zeros / b_played) * 100, 1)}%"
-                        
-                df_zeros = pd.DataFrame([a_row, b_row])
-                ordered_inning_cols = ['Team', '1', '2', '3', '4', '5', '6', '7', '8', '9']
-                
+    # EXECUTION: Single Matchup Analysis
+    if run_single:
+        if not team_a_id or not team_b_id:
+            st.error("Error identifying teams.")
+        else:
+            with st.spinner(f"Analyzing {team_a_name} vs {team_b_name}..."):
+                df_result = calculate_and_format_comparison(
+                    team_a_name, team_a_id, team_b_name, team_b_id, s_year, e_year, format_filter
+                )
                 st.markdown(f"#### 0-Run Inning Frequency ({format_filter})")
                 if format_filter == "Count":
                     st.caption("Displayed as: **[Zero-Run Innings] / [Total Innings Played]**")
+                st.dataframe(df_result, hide_index=True, use_container_width=True)
+
+    # EXECUTION: Bulk Upcoming Matches Analysis
+    if run_all:
+        if not upcoming_matches:
+            st.info("No upcoming matches found to analyze over the next 3 days.")
+        else:
+            st.markdown("---")
+            st.subheader(f"📋 Bulk Slate Analysis ({season_filter} — {format_filter} Format)")
+            
+            # Master progress bar so the user knows the app is hard at work
+            progress_bar = st.progress(0)
+            total_matches = len(upcoming_matches)
+            
+            for index, match in enumerate(upcoming_matches):
+                m_away = match['away']
+                m_home = match['home']
+                
+                id_away = teams_dict.get(m_away)
+                id_home = teams_dict.get(m_home)
+                
+                if id_away and id_home:
+                    st.write(f"### ⚾ {m_away} @ {m_home}")
                     
-                st.dataframe(df_zeros[ordered_inning_cols], hide_index=True, use_container_width=True)
+                    if show_last_match:
+                        last_h2h = get_last_h2h_match(id_away, id_home)
+                        if last_h2h:
+                            st.caption(f"**Last Match:** {last_h2h}")
+                    
+                    df_bulk_res = calculate_and_format_comparison(
+                        m_away, id_away, m_home, id_home, s_year, e_year, format_filter
+                    )
+                    st.dataframe(df_bulk_res, hide_index=True, use_container_width=True)
+                    st.divider()
+                
+                # Update progress bar
+                progress_bar.progress((index + 1) / total_matches)
+            
+            st.success("🎉 Slate data successfully generated!")
+
